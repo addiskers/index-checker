@@ -1,0 +1,17 @@
+services:
+  google-index-checker:
+    build: .
+    container_name: google-index-checker
+    ports:
+      - "8877:8877"  
+    environment:
+      - ZYTE_API_KEY=${ZYTE_API_KEY}  
+    volumes:
+      - ./results:/app/results  
+    restart: unless-stopped
+    networks:
+      - google-index-net
+
+networks:
+  google-index-net:
+    driver: bridge
