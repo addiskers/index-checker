@@ -1,4 +1,3 @@
-# Use Python 3.11 slim image
 FROM python:3.11-slim
 
 # Set working directory
@@ -26,18 +25,13 @@ COPY . .
 # Create results directory
 RUN mkdir -p results
 
-# Copy and make startup script executable
-COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-
-# Expose port 8877
+# Expose port 8877 (unusual port to avoid conflicts)
 EXPOSE 8877
 
-# Set environment variables for asyncio compatibility
+# Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONASYNCIODEBUG=0
-ENV SCRAPY_SETTINGS_MODULE=GoogleIndexSpider.settings
 
-# Use the startup script
-CMD ["/app/start.sh"]
+# Command to run the application
+CMD ["python", "main.py"]
