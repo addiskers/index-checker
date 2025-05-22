@@ -8,3 +8,4 @@ xlsxwriter==3.1.9
 python-multipart==0.0.6
 pydantic==2.5.0
 dotenv
+scrapy-zyte-api
