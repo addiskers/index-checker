@@ -1,5 +1,6 @@
+from dotenv import load_dotenv
 import os
-
+load_dotenv()
 # Scrapy settings for GoogleIndexSpider project
 #
 # For simplicity, this file contains only settings considered important or

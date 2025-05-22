@@ -322,7 +322,60 @@ async def run_scrapy_spider(urls: List[str]) -> List[dict]:
             temp_output = temp_file.name
         
         urls_string = ','.join(urls)
-        spider_path = os.path.join(os.getcwd(), 'GoogleIndexSpider')
+        
+        # Enhanced path detection for both local and Docker environments
+        current_dir = os.getcwd()
+        possible_paths = [
+            # Local development paths
+            os.path.join(current_dir, 'GoogleIndexSpider'),
+            os.path.join(current_dir, 'google-index-checker', 'GoogleIndexSpider'),
+            os.path.join(os.path.dirname(current_dir), 'GoogleIndexSpider'),
+            # Docker paths
+            '/app/GoogleIndexSpider',
+            './GoogleIndexSpider',
+            'GoogleIndexSpider',
+            # Relative to main.py location
+            os.path.join(os.path.dirname(__file__), 'GoogleIndexSpider'),
+        ]
+        
+        spider_path = None
+        for path in possible_paths:
+            logger.info(f"Checking path: {path}")
+            if os.path.exists(path):
+                scrapy_cfg = os.path.join(path, 'scrapy.cfg')
+                logger.info(f"Path exists, checking for scrapy.cfg: {scrapy_cfg}")
+                if os.path.exists(scrapy_cfg):
+                    spider_path = path
+                    logger.info(f"Found valid spider path: {spider_path}")
+                    break
+                else:
+                    logger.info(f"scrapy.cfg not found in {path}")
+            else:
+                logger.info(f"Path does not exist: {path}")
+        
+        if not spider_path:
+            logger.error(f"Could not find GoogleIndexSpider directory.")
+            logger.error(f"Current directory: {current_dir}")
+            logger.error(f"__file__ location: {os.path.dirname(__file__) if '__file__' in globals() else 'Not available'}")
+            logger.error(f"Checked paths: {possible_paths}")
+            
+            # List contents of current directory
+            try:
+                contents = os.listdir(current_dir)
+                logger.error(f"Current directory contents: {contents}")
+            except Exception as e:
+                logger.error(f"Could not list directory contents: {e}")
+            
+            # Also check if we're in the right project directory
+            if 'google-index-checker' in current_dir:
+                # We're in the project directory
+                project_spider_path = os.path.join(current_dir, 'GoogleIndexSpider')
+            else:
+                # We might be running from parent directory
+                project_spider_path = os.path.join(current_dir, 'google-index-checker', 'GoogleIndexSpider')
+            
+            logger.error(f"Expected spider path: {project_spider_path}")
+            return []
         
         cmd = [
             sys.executable, '-m', 'scrapy', 'crawl', 'gr',
@@ -332,6 +385,9 @@ async def run_scrapy_spider(urls: List[str]) -> List[dict]:
         ]
         
         logger.info(f"Running Scrapy for {len(urls)} URLs...")
+        logger.info(f"Using spider path: {spider_path}")
+        logger.info(f"Command: {' '.join(cmd)}")
+        logger.info(f"Output file: {temp_output}")
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -342,34 +398,72 @@ async def run_scrapy_spider(urls: List[str]) -> List[dict]:
         
         stdout, stderr = await process.communicate()
         
+        logger.info(f"Scrapy return code: {process.returncode}")
+        if stdout:
+            logger.info(f"Scrapy stdout: {stdout.decode()[:500]}...")
+        if stderr:
+            logger.info(f"Scrapy stderr: {stderr.decode()[:500]}...")
+        
         if process.returncode != 0:
-            logger.error(f"Scrapy process failed: {stderr.decode()}")
+            logger.error(f"Scrapy process failed with return code {process.returncode}")
+            logger.error(f"Full stderr: {stderr.decode()}")
             return []
         
+        # Read and parse results
         results = []
         if os.path.exists(temp_output):
             try:
                 with open(temp_output, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
+                    logger.info(f"Raw file content length: {len(content)}")
                     if content:
+                        logger.info(f"Content preview: {content[:200]}...")
+                    
+                    if content:
+                        # Handle both JSON array and JSON lines format
                         if content.startswith('['):
                             results = json.loads(content)
+                            logger.info(f"Parsed as JSON array: {len(results)} items")
                         else:
-                            for line in content.split('\n'):
-                                if line.strip():
-                                    results.append(json.loads(line))
+                            # JSON lines format
+                            lines = [line.strip() for line in content.split('\n') if line.strip()]
+                            logger.info(f"Processing {len(lines)} JSON lines")
+                            
+                            for line_num, line in enumerate(lines):
+                                try:
+                                    item = json.loads(line)
+                                    results.append(item)
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Error parsing line {line_num}: {e}")
+                    else:
+                        logger.warning("Output file is empty")
+                        
             except json.JSONDecodeError as e:
                 logger.error(f"Error parsing JSON results: {e}")
                 results = []
+            except Exception as e:
+                logger.error(f"Unexpected error reading results file: {e}")
+                results = []
             finally:
-                if os.path.exists(temp_output):
-                    os.unlink(temp_output)
+                # Clean up temporary file
+                try:
+                    if os.path.exists(temp_output):
+                        os.unlink(temp_output)
+                except Exception as e:
+                    logger.warning(f"Could not clean up temp file: {e}")
+        else:
+            logger.error(f"Output file does not exist: {temp_output}")
         
         logger.info(f"Scrapy completed with {len(results)} results")
+        if results:
+            logger.info(f"Sample result: {results[0]}")
+        
         return results
         
     except Exception as e:
-        logger.error(f"Error running Scrapy: {str(e)}")
+        logger.error(f"Error running Scrapy spider: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return []
 
 async def process_urls_batch(job_id: str, urls: List[str], batch_size: int):
@@ -417,43 +511,110 @@ async def process_urls_batch(job_id: str, urls: List[str], batch_size: int):
 async def create_excel_report(job_id: str, results: List[dict]) -> str:
     """Create Excel report from results"""
     try:
+        logger.info(f"Creating Excel report with {len(results)} results")
+        logger.info(f"Sample result: {results[0] if results else 'No results'}")
+        
         if not results:
+            # Create empty DataFrame with expected columns
             df = pd.DataFrame(columns=['index', 'url', 'indexed', 'status', 'search_link', 'checked_at'])
         else:
+            # Create DataFrame from results
             df = pd.DataFrame(results)
+            logger.info(f"DataFrame columns: {df.columns.tolist()}")
+            logger.info(f"DataFrame shape: {df.shape}")
         
-        df['checked_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        if 'indexed' in df.columns:
+        # Add status column based on indexed field (only if we have results)
+        if len(df) > 0 and 'indexed' in df.columns:
             df['status'] = df['indexed'].apply(lambda x: 'Indexed' if x else 'Not Indexed')
         else:
             df['status'] = 'Unknown'
         
-        columns_order = ['index', 'url', 'indexed', 'status', 'search_link', 'checked_at']
-        df = df.reindex(columns=[col for col in columns_order if col in df.columns])
+        # DON'T overwrite checked_at if it already exists from Scrapy
+        if 'checked_at' not in df.columns or df['checked_at'].isna().all():
+            df['checked_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        # Reorder columns (only include columns that exist)
+        desired_columns = ['index', 'url', 'indexed', 'status', 'search_link', 'result_url', 'total_results', 'checked_at', 'error']
+        available_columns = [col for col in desired_columns if col in df.columns]
+        df = df[available_columns]
+        
+        # Create results directory if it doesn't exist
         os.makedirs('results', exist_ok=True)
         excel_file = f'results/google_index_results_{job_id}.xlsx'
         
+        # Create Excel file with formatting
         with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Index Results', index=False)
             
+            # Get workbook and worksheet
             workbook = writer.book
             worksheet = writer.sheets['Index Results']
             
+            # Add formats
             header_format = workbook.add_format({
-                'bold': True, 'text_wrap': True, 'valign': 'top',
-                'fg_color': '#D7E4BC', 'border': 1
+                'bold': True,
+                'text_wrap': True,
+                'valign': 'top',
+                'fg_color': '#D7E4BC',
+                'border': 1
             })
             
+            indexed_format = workbook.add_format({
+                'bg_color': '#C6EFCE',
+                'font_color': '#006100'
+            })
+            
+            not_indexed_format = workbook.add_format({
+                'bg_color': '#FFC7CE',
+                'font_color': '#9C0006'
+            })
+            
+            # Apply header format
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
+            
+            # Apply conditional formatting for status column
+            if 'status' in df.columns and len(df) > 0:
+                status_col = df.columns.get_loc('status')
+                
+                # Apply formatting to "Indexed" cells
+                worksheet.conditional_format(1, status_col, len(df), status_col, {
+                    'type': 'text',
+                    'criteria': 'containing',
+                    'value': 'Indexed',
+                    'format': indexed_format
+                })
+                
+                # Apply formatting to "Not Indexed" cells
+                worksheet.conditional_format(1, status_col, len(df), status_col, {
+                    'type': 'text',
+                    'criteria': 'containing',
+                    'value': 'Not Indexed',
+                    'format': not_indexed_format
+                })
+            
+            # Auto-adjust column widths
+            for i, col in enumerate(df.columns):
+                if len(df) > 0:
+                    # Calculate max width needed
+                    max_length = max(
+                        df[col].astype(str).str.len().max() if not df[col].isna().all() else 0,
+                        len(col)
+                    ) + 2
+                else:
+                    max_length = len(col) + 2
+                
+                # Set reasonable limits
+                worksheet.set_column(i, i, min(max_length, 50))
         
-        logger.info(f"Excel report created: {excel_file}")
+        logger.info(f"Excel report created successfully: {excel_file}")
+        logger.info(f"Final DataFrame info - Rows: {len(df)}, Columns: {len(df.columns)}")
+        
         return excel_file
         
     except Exception as e:
         logger.error(f"Error creating Excel report: {str(e)}")
-        raise
+        raise Exception(f"Failed to create Excel report: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
